@@ -340,6 +340,7 @@ def _latest_sales(rows: list[dict]) -> dict[str, dict]:
 
 def build_list(inventory: list[dict], sales: list[dict]) -> list[dict]:
     by_stock = _latest_sales(sales)
+    inventory_keys = {stock_key(inv["stock"]) for inv in inventory}
     listed = []
     for inv in inventory:
         sale = by_stock.get(stock_key(inv["stock"]))
@@ -363,9 +364,42 @@ def build_list(inventory: list[dict], sales: list[dict]) -> list[dict]:
                 "sale_date": sale["sale_date"] if matched else "",
                 "salesperson": sale["salesperson"] if matched else "",
                 "buyer": sale["buyer"] if matched else "",
+                "row_kind": "inventory",
             }
         )
-    listed.sort(key=lambda row: (row["make"].casefold(), row["model"].casefold(), row["stock"]))
+    for sale in by_stock.values():
+        if stock_key(sale["stock"]) in inventory_keys:
+            continue
+        house = sale["house"]
+        comm = sale["comm"]
+        finance = None if house is None and comm is None else float(house or 0) - float(comm or 0)
+        listed.append(
+            {
+                "stock": sale["stock"],
+                "vin": "",
+                "year": None,
+                "make": "",
+                "model": "",
+                "trim": "",
+                "type": "",
+                "mileage": None,
+                "exterior": "",
+                "interior": "",
+                "web_price": None,
+                "retail": sale["retail"],
+                "age": None,
+                "retail_source": "sales report",
+                "matched": False,
+                "comm": comm,
+                "house": house,
+                "finance": finance,
+                "sale_date": sale["sale_date"],
+                "salesperson": sale["salesperson"],
+                "buyer": sale["buyer"],
+                "row_kind": "unmatched_sale",
+            }
+        )
+    listed.sort(key=lambda row: (str(row.get("make") or "").casefold(), str(row.get("model") or "").casefold(), row["stock"]))
     return listed
 
 
@@ -1025,7 +1059,7 @@ def show_sheet(payload: dict):
     if not rows:
         st.info("No list yet. The upload tab is where a new week gets published.")
         return
-    rows = [{**row, "salesperson": salesperson_name(row.get("salesperson"))} for row in rows]
+    rows = [{**row, "salesperson": salesperson_name(row.get("salesperson"))} for row in rows if row.get("row_kind") != "unmatched_sale"]
 
     bubble_slot = st.container()
     saved = str(payload.get("saved_at") or "").replace("T", " ")
@@ -1074,14 +1108,21 @@ def show_sheet(payload: dict):
         c4.metric("Comm gross", money(pd.to_numeric(frame["Comm Gross"], errors="coerce").sum() if "Comm Gross" in frame.columns else 0))
         c5.metric("House gross", money(pd.to_numeric(frame["House Gross"], errors="coerce").sum() if "House Gross" in frame.columns else 0))
         c6.metric("Finance gross", money(pd.to_numeric(frame["Finance Gross"], errors="coerce").sum() if "Finance Gross" in frame.columns else 0))
+        miles_avg = pd.to_numeric(frame["Mileage"], errors="coerce").mean() if "Mileage" in frame.columns else None
+        retail_avg = pd.to_numeric(frame["Retail Price"], errors="coerce").mean() if "Retail Price" in frame.columns else None
+        age_avg = pd.to_numeric(frame["Age"], errors="coerce").mean() if "Age" in frame.columns else None
+        comm_avg = pd.to_numeric(frame["Comm Gross"], errors="coerce").mean() if "Comm Gross" in frame.columns else None
+        house_avg = pd.to_numeric(frame["House Gross"], errors="coerce").mean() if "House Gross" in frame.columns else None
+        finance_avg = pd.to_numeric(frame["Finance Gross"], errors="coerce").mean() if "Finance Gross" in frame.columns else None
+        a1, a2, a3, a4, a5, a6 = st.columns(6)
+        a1.metric("Avg mileage", miles_text(miles_avg) or "—")
+        a2.metric("Avg age", age_text(age_avg) or "—")
+        a3.metric("Avg retail", money(retail_avg) or "—")
+        a4.metric("Avg comm", money(comm_avg) or "—")
+        a5.metric("Avg house", money(house_avg) or "—")
+        a6.metric("Avg finance", money(finance_avg) or "—")
 
-    miles_avg = pd.to_numeric(frame["Mileage"], errors="coerce").mean() if "Mileage" in frame.columns else None
     web_avg = pd.to_numeric(frame["Web Price"], errors="coerce").mean() if "Web Price" in frame.columns else None
-    retail_avg = pd.to_numeric(frame["Retail Price"], errors="coerce").mean() if "Retail Price" in frame.columns else None
-    age_avg = pd.to_numeric(frame["Age"], errors="coerce").mean() if "Age" in frame.columns else None
-    comm_avg = pd.to_numeric(frame["Comm Gross"], errors="coerce").mean() if "Comm Gross" in frame.columns else None
-    house_avg = pd.to_numeric(frame["House Gross"], errors="coerce").mean() if "House Gross" in frame.columns else None
-    finance_avg = pd.to_numeric(frame["Finance Gross"], errors="coerce").mean() if "Finance Gross" in frame.columns else None
     web_txt = (money(web_avg) or "—").replace("$", "\\$")
     retail_txt = (money(retail_avg) or "—").replace("$", "\\$")
     comm_txt = (money(comm_avg) or "—").replace("$", "\\$")
@@ -1133,6 +1174,40 @@ def show_sheet(payload: dict):
         file_name="super-helpful-sold-list.csv",
         mime="text/csv",
     )
+
+
+def unmatched_tab():
+    current = current_list()
+    archives = archived_lists()
+    choices = []
+    if current:
+        choices.append(current | {"label": week_label(current, "Current")})
+    for sheet in archives:
+        choices.append(sheet | {"label": week_label(sheet, "Archive")})
+    if not choices:
+        st.info("No list yet.")
+        return
+    picked = st.selectbox("Week", [item["label"] for item in choices], key="unmatched_week")
+    payload = next(item for item in choices if item["label"] == picked)
+    rows = [{**row, "salesperson": salesperson_name(row.get("salesperson"))} for row in payload.get("rows") or []]
+    missing_sale = [row for row in rows if row.get("row_kind") != "unmatched_sale" and not row.get("matched")]
+    missing_inventory = [row for row in rows if row.get("row_kind") == "unmatched_sale"]
+    st.caption("Sold-list cars with no sales-report stock, and sales-report stocks that were not on the sold list. Older weeks only have the first group. New publishes keep both.")
+    left, right = st.columns(2)
+    left.metric("No sales report", f"{len(missing_sale):,}")
+    right.metric("No sold-list stock", f"{len(missing_inventory):,}")
+    st.markdown('<div class="make-bar">On the sold list, no matching sale</div>', unsafe_allow_html=True)
+    if missing_sale:
+        st.dataframe(as_frame(missing_sale, True), hide_index=True, use_container_width=True)
+    else:
+        st.info("Every sold-list stock in this week matched a sale.")
+    st.markdown('<div class="make-bar">On the sales report, no sold-list stock</div>', unsafe_allow_html=True)
+    if missing_inventory:
+        st.dataframe(as_frame(missing_inventory, True), hide_index=True, use_container_width=True)
+    elif any(row.get("row_kind") == "unmatched_sale" for row in rows):
+        st.info("Every sales-report stock matched the sold list.")
+    else:
+        st.info("This week was saved before leftover sales were kept. Publish it again to capture sales that were not on the sold list.")
 
 
 def list_tab():
@@ -1199,8 +1274,10 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-sold_tab, new_tab = st.tabs(["Sold list", "Upload"])
+sold_tab, unmatched_tab_box, new_tab = st.tabs(["Sold list", "Unmatched", "Upload"])
 with sold_tab:
     list_tab()
+with unmatched_tab_box:
+    unmatched_tab()
 with new_tab:
     upload_tab()
