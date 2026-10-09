@@ -531,6 +531,159 @@ def archived_lists() -> list[dict]:
     return [_payload(row) for row in rows]
 
 
+def ensure_otc_table(conn: sqlite3.Connection) -> None:
+    conn.execute("CREATE TABLE IF NOT EXISTS otc_months (label TEXT PRIMARY KEY, rows_json TEXT)")
+    if conn.execute("SELECT COUNT(*) FROM otc_months").fetchone()[0]:
+        return
+    for label, rows in OTC_MONTHS.items():
+        if rows:
+            conn.execute("INSERT INTO otc_months (label, rows_json) VALUES (?, ?)", (label, json.dumps(rows)))
+    conn.commit()
+
+
+def save_otc_upload(raw: bytes, filename: str) -> list[str]:
+    import re
+    from io import BytesIO
+    import pandas as pd
+
+    book = pd.ExcelFile(BytesIO(raw))
+    saved = []
+    conn = connect()
+    ensure_otc_table(conn)
+    for sheet in book.sheet_names:
+        if not re.match(r"^[A-Za-z]+ \d{4}$", sheet.strip()):
+            continue
+        frame = pd.read_excel(book, sheet, header=1)
+        if frame.shape[1] < 6:
+            continue
+        frame = frame.iloc[:, :7]
+        frame.columns = ["date", "stock", "year", "make", "model", "rep", "notes"]
+        rows = []
+        for rec in frame.to_dict(orient="records"):
+            stock = re.sub(r"\s+", "", str(rec.get("stock") or "")).upper()
+            if not stock or stock in {"NAN", "STOCK#", "STOCK"}:
+                continue
+            raw_date = str(rec.get("date") or "").strip()
+            sale = ""
+            for fmt in ("%m.%d.%Y", "%m/%d/%Y", "%Y-%m-%d"):
+                try:
+                    sale = datetime.strptime(raw_date, fmt).strftime("%Y-%m-%d")
+                    break
+                except ValueError:
+                    pass
+            rows.append({
+                "sale_date": sale,
+                "stock": stock,
+                "year": rec.get("year"),
+                "make": str(rec.get("make") or "").strip(),
+                "model": str(rec.get("model") or "").strip(),
+                "salesperson": str(rec.get("rep") or "").strip(),
+            })
+        if not rows:
+            continue
+        conn.execute("INSERT OR REPLACE INTO otc_months (label, rows_json) VALUES (?, ?)", (sheet.strip(), json.dumps(rows)))
+        saved.append(f"{sheet.strip()} ({len(rows)})")
+    conn.commit()
+    ensure_month_summaries(conn)
+    conn.close()
+    return saved
+    """OTC month sheets are the master list. Weekly rows fill in price and gross, duplicates dropped."""
+    from sold_list import salesperson_name
+
+    weeks = conn.execute(
+        """
+        SELECT saved_at, inventory_file, sales_file, rows_json
+        FROM weeks
+        WHERE inventory_file LIKE '%SOLD LIST%' AND inventory_file NOT LIKE '%summary%'
+        """
+    ).fetchall()
+    weekly_by_stock: dict[str, tuple] = {}
+    week_months = set()
+    for saved_at, _inventory_file, sales_file, rows_json in weeks:
+        week_months.add(saved_at[:7])
+        for row in json.loads(rows_json or "[]"):
+            stock = str(row.get("stock") or "").strip().upper()
+            if not stock:
+                continue
+            prev = weekly_by_stock.get(stock)
+            if prev is None or saved_at >= prev[0]:
+                weekly_by_stock[stock] = (saved_at, row, sales_file)
+    conn.execute("DELETE FROM weeks WHERE inventory_file LIKE '%summary%'")
+    ensure_otc_table(conn)
+    stored = conn.execute("SELECT label, rows_json FROM otc_months").fetchall()
+    months = {label: json.loads(rows_json) for label, rows_json in stored} or OTC_MONTHS
+    for label, otc_rows in months.items():
+        if not otc_rows:
+            continue
+        month = datetime.strptime(label, "%B %Y").strftime("%Y-%m")
+        year, mon = int(month[:4]), int(month[5:7])
+        next_month = f"{year + 1}-01" if mon == 12 else f"{year}-{mon + 1:02d}"
+        later = [saved_at for saved_at, *_ in weeks if saved_at[:7] >= next_month]
+        if later:
+            stamp = (datetime.fromisoformat(min(later)[:19]) - timedelta(seconds=1)).isoformat(timespec="seconds")
+        else:
+            stamp = f"{month}-31T23:59:59" if mon in {1, 3, 5, 7, 8, 10, 12} else f"{month}-30T23:59:59"
+        seen = set()
+        rows = []
+        for otc in otc_rows:
+            stock = str(otc.get("stock") or "").strip().upper()
+            if not stock or stock in seen:
+                continue
+            seen.add(stock)
+            weekly = weekly_by_stock.get(stock)
+            base = dict(weekly[1]) if weekly else {
+                "stock": stock,
+                "vin": "",
+                "year": otc.get("year"),
+                "make": otc.get("make") or "",
+                "model": otc.get("model") or "",
+                "trim": "",
+                "type": "",
+                "mileage": None,
+                "exterior": "",
+                "interior": "",
+                "web_price": None,
+                "retail": None,
+                "age": None,
+                "matched": False,
+                "comm": None,
+                "house": None,
+                "finance": None,
+            }
+            base["stock"] = stock
+            base["sale_date"] = otc.get("sale_date") or base.get("sale_date") or ""
+            base["salesperson"] = salesperson_name(otc.get("salesperson") or base.get("salesperson"))
+            if otc.get("make"):
+                base["make"] = str(otc["make"]).title()
+            if otc.get("model"):
+                base["model"] = str(otc["model"]).title()
+            rows.append(base)
+        rows.sort(key=lambda row: (str(row.get("make") or "").casefold(), str(row.get("model") or "").casefold(), str(row.get("stock") or "")))
+        conn.execute(
+            "INSERT INTO weeks (saved_at, inventory_file, sales_file, vehicle_count, rows_json, is_current) VALUES (?, ?, ?, ?, ?, 0)",
+            (stamp, f"SUPER HELPFUL SOLD LIST 2026 / {label} summary", "OTC month plus weekly gross", len(rows), json.dumps(rows)),
+        )
+    conn.commit()
+
+
+def publish(rows: list[dict], inventory_file: str, sales_file: str) -> dict:
+    saved_at = datetime.now().isoformat(timespec="seconds")
+    conn = connect()
+    conn.execute("UPDATE weeks SET is_current = 0 WHERE is_current = 1")
+    conn.execute(
+        "INSERT INTO weeks (saved_at, inventory_file, sales_file, vehicle_count, rows_json, is_current) VALUES (?, ?, ?, ?, ?, 1)",
+        (saved_at, inventory_file, sales_file, len(rows), json.dumps(rows)),
+    )
+    conn.commit()
+    ensure_month_summaries(conn)
+    conn.close()
+    return {
+        "saved_at": saved_at,
+        "inventory_file": inventory_file,
+        "sales_file": sales_file,
+        "vehicle_count": len(rows),
+        "rows": rows,
+    }
 def ensure_month_summaries(conn: sqlite3.Connection) -> None:
     """OTC month sheets are the master list. Weekly rows fill in price and gross, duplicates dropped."""
     weeks = conn.execute(
@@ -552,7 +705,10 @@ def ensure_month_summaries(conn: sqlite3.Connection) -> None:
             if prev is None or saved_at >= prev[0]:
                 weekly_by_stock[stock] = (saved_at, row, sales_file)
     conn.execute("DELETE FROM weeks WHERE inventory_file LIKE '%summary%'")
-    for label, otc_rows in OTC_MONTHS.items():
+    ensure_otc_table(conn)
+    stored = conn.execute("SELECT label, rows_json FROM otc_months").fetchall()
+    months = {label: json.loads(rows_json) for label, rows_json in stored} or OTC_MONTHS
+    for label, otc_rows in months.items():
         if not otc_rows:
             continue
         month = datetime.strptime(label, "%B %Y").strftime("%Y-%m")
@@ -1001,19 +1157,23 @@ def upload_tab():
     st.write("Inventory is the master file. The sales report replaces retail and adds commission, house, and finance gross.")
     inventory = st.file_uploader("Sold inventory", type=["csv", "xlsx", "xls"])
     sales = st.file_uploader("Vehicle sales report", type=["csv", "xlsx", "xls"])
+    otc = st.file_uploader("OTC list, optional", type=["xlsx", "xls"])
+    st.caption("The month summary uses the OTC sheet with that month's name, such as November 2026. Upload the OTC workbook when a month changes.")
     if st.button("Publish week", type="primary", disabled=not (inventory and sales)):
         try:
             rows, inventory_count, sales_count = rows_from_uploads(inventory.getvalue(), inventory.name, sales.getvalue(), sales.name)
+            otc_saved = save_otc_upload(otc.getvalue(), otc.name) if otc else []
         except Exception as error:
             st.error(str(error))
             return
         had_current = current_list() is not None
         publish(rows, inventory.name, sales.name)
         matched = sum(1 for row in rows if row.get("matched"))
+        extra = f" OTC months updated: {', '.join(otc_saved)}." if otc_saved else ""
         if had_current:
-            st.success(f"Published {inventory_count} vehicles, {matched} matched to {sales_count} sales. The previous week is in the archive.")
+            st.success(f"Published {inventory_count} vehicles, {matched} matched to {sales_count} sales. The previous week is in the archive.{extra}")
         else:
-            st.success(f"Published {inventory_count} vehicles, {matched} matched to {sales_count} sales.")
+            st.success(f"Published {inventory_count} vehicles, {matched} matched to {sales_count} sales.{extra}")
         st.rerun()
 
 
