@@ -463,6 +463,7 @@ def connect() -> sqlite3.Connection:
     _stamp(conn)
     conn.commit()
     _import_old_json(conn)
+    ensure_month_summaries(conn)
     return conn
 
 
@@ -522,10 +523,53 @@ def current_list() -> dict | None:
 def archived_lists() -> list[dict]:
     conn = connect()
     rows = conn.execute(
-        "SELECT id, saved_at, inventory_file, sales_file, vehicle_count, rows_json FROM weeks WHERE is_current = 0 ORDER BY id DESC"
+        "SELECT id, saved_at, inventory_file, sales_file, vehicle_count, rows_json FROM weeks WHERE is_current = 0 ORDER BY saved_at DESC, id DESC"
     ).fetchall()
     conn.close()
     return [_payload(row) for row in rows]
+
+
+def ensure_month_summaries(conn: sqlite3.Connection) -> None:
+    """One deduped month per closed month, placed just before the next month's weeks."""
+    weeks = conn.execute(
+        """
+        SELECT saved_at, inventory_file, sales_file, rows_json
+        FROM weeks
+        WHERE inventory_file LIKE '%SOLD LIST%' AND inventory_file NOT LIKE '%summary%'
+        """
+    ).fetchall()
+    if not weeks:
+        return
+    week_months = {saved_at[:7] for saved_at, *_ in weeks}
+    by_month: dict[str, dict[str, tuple]] = {}
+    for saved_at, _inventory_file, sales_file, rows_json in weeks:
+        for row in json.loads(rows_json or "[]"):
+            sale = str(row.get("sale_date") or "")
+            stock = str(row.get("stock") or "").strip().upper()
+            if len(sale) < 7 or sale < "2026-02-17" or not stock:
+                continue
+            chosen = by_month.setdefault(sale[:7], {})
+            prev = chosen.get(stock)
+            if prev is None or saved_at >= prev[0]:
+                chosen[stock] = (saved_at, row, sales_file)
+    conn.execute("DELETE FROM weeks WHERE inventory_file LIKE '%summary%'")
+    for month, stocks in sorted(by_month.items()):
+        year, mon = int(month[:4]), int(month[5:7])
+        next_month = f"{year + 1}-01" if mon == 12 else f"{year}-{mon + 1:02d}"
+        if not any(item >= next_month for item in week_months):
+            continue
+        first_next = min(saved_at for saved_at, *_ in weeks if saved_at[:7] >= next_month)
+        stamp = (datetime.fromisoformat(first_next[:19]) - timedelta(seconds=1)).isoformat(timespec="seconds")
+        label = datetime.strptime(month, "%Y-%m").strftime("%B %Y")
+        rows = [item[1] for item in stocks.values()]
+        rows.sort(key=lambda row: (str(row.get("make") or "").casefold(), str(row.get("model") or "").casefold(), str(row.get("stock") or "")))
+        conn.execute(
+            "INSERT INTO weeks (saved_at, inventory_file, sales_file, vehicle_count, rows_json, is_current) VALUES (?, ?, ?, ?, ?, 0)",
+            (stamp, f"SUPER HELPFUL SOLD LIST 2026 / {label} summary", "monthly summary", len(rows), json.dumps(rows)),
+        )
+    conn.commit()
+
+
 
 
 def publish(rows: list[dict], inventory_file: str, sales_file: str) -> dict:
@@ -537,6 +581,7 @@ def publish(rows: list[dict], inventory_file: str, sales_file: str) -> dict:
         (saved_at, inventory_file, sales_file, len(rows), json.dumps(rows)),
     )
     conn.commit()
+    ensure_month_summaries(conn)
     conn.close()
     return {
         "saved_at": saved_at,
