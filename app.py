@@ -128,6 +128,7 @@ def map_inventory(rows: list[dict]) -> list[dict]:
             "interior": str(_pick(row, ["interior color", "interior", "int color"])).strip(),
             "web_price": num(_pick(row, ["web price"])),
             "retail": num(_pick(row, ["retail price", "retail"])),
+            "purchase_cost": num(_pick(row, ["purchase cost", "cost", "vehicle cost"])),
             "age": age_days(_pick(row, ["age"])),
         }
         if item["stock"] or item["vin"] or item["make"]:
@@ -955,6 +956,7 @@ def as_frame(rows: list[dict], show_buyer: bool) -> pd.DataFrame:
         "exterior": "Exterior",
         "interior": "Interior",
         "web_price": "Web Price",
+        "purchase_cost": "Purchase Cost",
         "retail": "Retail Price",
         "age": "Age",
         "comm": "Comm Gross",
@@ -977,6 +979,7 @@ def as_frame(rows: list[dict], show_buyer: bool) -> pd.DataFrame:
         "Exterior",
         "Interior",
         "Web Price",
+        "Purchase Cost",
         "Retail Price",
         "Age",
         "Comm Gross",
@@ -994,11 +997,11 @@ def as_frame(rows: list[dict], show_buyer: bool) -> pd.DataFrame:
     return out
 
 
-AVG_COLS = ["Mileage", "Web Price", "Retail Price", "Age", "Comm Gross", "House Gross", "Finance Gross"]
+AVG_COLS = ["Mileage", "Web Price", "Purchase Cost", "Retail Price", "Age", "Comm Gross", "House Gross", "Finance Gross"]
 
 
 def average_row(group: pd.DataFrame) -> dict:
-    row = {column: None if column in ("Web Price", "Retail Price", "Mileage", "Age", "Comm Gross", "House Gross", "Finance Gross") else "" for column in group.columns}
+    row = {column: None if column in ("Web Price", "Purchase Cost", "Retail Price", "Mileage", "Age", "Comm Gross", "House Gross", "Finance Gross") else "" for column in group.columns}
     row["Stock"] = "Average"
     for column in AVG_COLS:
         if column not in group.columns:
@@ -1123,6 +1126,12 @@ def show_sheet(payload: dict):
         a4.metric("Avg comm", money(comm_avg) or "—")
         a5.metric("Avg house", money(house_avg) or "—")
         a6.metric("Avg finance", money(finance_avg) or "—")
+        if "Purchase Cost" in frame.columns and pd.to_numeric(frame["Purchase Cost"], errors="coerce").notna().any():
+            cost_avg = pd.to_numeric(frame["Purchase Cost"], errors="coerce").mean()
+            cost_total = pd.to_numeric(frame["Purchase Cost"], errors="coerce").sum()
+            b1, b2 = st.columns(2)
+            b1.metric("Purchase cost", money(cost_total) or "—")
+            b2.metric("Avg purchase cost", money(cost_avg) or "—")
 
     web_avg = pd.to_numeric(frame["Web Price"], errors="coerce").mean() if "Web Price" in frame.columns else None
     web_txt = (money(web_avg) or "—").replace("$", "\\$")
@@ -1137,7 +1146,7 @@ def show_sheet(payload: dict):
         + f" · {len(frame):,} vehicles · avg mileage {miles_text(miles_avg) or '—'} · avg web {web_txt} · avg retail {retail_txt} · avg age {age_text(age_avg) or '—'} · avg comm {comm_txt} · avg house {house_txt} · avg finance {finance_txt}"
     )
 
-    money_cols = [column for column in ["Web Price", "Retail Price", "Comm Gross", "House Gross", "Finance Gross"] if column in frame.columns]
+    money_cols = [column for column in ["Web Price", "Purchase Cost", "Retail Price", "Comm Gross", "House Gross", "Finance Gross"] if column in frame.columns]
     formats = {column: money for column in money_cols}
     if "Age" in frame.columns:
         formats["Age"] = age_text
@@ -1164,9 +1173,12 @@ def show_sheet(payload: dict):
         comm_total = pd.to_numeric(group["Comm Gross"], errors="coerce").sum() if "Comm Gross" in group.columns else 0
         house_total = pd.to_numeric(group["House Gross"], errors="coerce").sum() if "House Gross" in group.columns else 0
         finance_total = pd.to_numeric(group["Finance Gross"], errors="coerce").sum() if "Finance Gross" in group.columns else 0
+        totals_parts = [("Retail", retail_total), ("Comm", comm_total), ("House", house_total), ("Finance", finance_total)]
+        if "Purchase Cost" in group.columns and pd.to_numeric(group["Purchase Cost"], errors="coerce").notna().any():
+            totals_parts.insert(0, ("Cost", pd.to_numeric(group["Purchase Cost"], errors="coerce").sum()))
         totals = " · ".join(
             f"{label} {(money(value) or '$0.00').replace('$', '&#36;')}"
-            for label, value in [("Retail", retail_total), ("Comm", comm_total), ("House", house_total), ("Finance", finance_total)]
+            for label, value in totals_parts
         )
         st.markdown(
             f'<div class="make-bar">Make: {make_name} · Count: {len(group)}'
