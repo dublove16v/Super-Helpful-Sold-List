@@ -788,12 +788,12 @@ import pandas as pd
 import streamlit as st
 
 
-st.set_page_config(page_title="Super Helpful Sold List", layout="wide")
+st.set_page_config(page_title="Mega Super Helpful Sold List", layout="wide")
 
 st.markdown(
     """
     <style>
-      html, body, .stApp, [data-testid="stMarkdown"], [data-testid="stCaption"], h1, h2, h3 {
+      html, body, .stApp, .stApp * {
         font-family: "Century Gothic Pro", "Century Gothic", "CenturyGothic", "AppleGothic", sans-serif !important;
       }
       .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"],
@@ -1179,9 +1179,9 @@ def upload_tab():
 
 st.markdown(
     """
-    <div class="app-title">Super Helpful Sold List</div>
+    <div class="app-title">Mega Super Helpful Sold List</div>
     <div class="app-rule"></div>
-    <div class="app-sub">Inventory is the master list. A matching stock number replaces retail and adds commission, house, and finance gross.</div>
+    <div class="app-sub">A list like you've never seen before</div>
     """,
     unsafe_allow_html=True,
 )
