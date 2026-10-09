@@ -992,6 +992,8 @@ def as_frame(rows: list[dict], show_buyer: bool) -> pd.DataFrame:
     out = frame[[column for column in keep if column in frame.columns]].copy()
     if "Purchase Cost" not in out.columns:
         out.insert(out.columns.get_loc("Web Price") + 1 if "Web Price" in out.columns else len(out.columns), "Purchase Cost", None)
+    if "Purchase Cost" in out.columns:
+        out["Purchase Cost"] = pd.to_numeric(out["Purchase Cost"], errors="coerce")
     if "Mileage" in out.columns:
         out["Mileage"] = pd.to_numeric(out["Mileage"], errors="coerce").round().astype("Int64")
     if "Year" in out.columns:
