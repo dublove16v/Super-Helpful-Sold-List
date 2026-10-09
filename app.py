@@ -956,7 +956,7 @@ def as_frame(rows: list[dict], show_buyer: bool) -> pd.DataFrame:
         "exterior": "Exterior",
         "interior": "Interior",
         "web_price": "Web Price",
-        "purchase_cost": "Purchase Cost",
+        "purchase_cost": "Vehicle Cost",
         "retail": "Retail Price",
         "age": "Age",
         "comm": "Comm Gross",
@@ -979,7 +979,7 @@ def as_frame(rows: list[dict], show_buyer: bool) -> pd.DataFrame:
         "Exterior",
         "Interior",
         "Web Price",
-        "Purchase Cost",
+        "Vehicle Cost",
         "Retail Price",
         "Age",
         "Comm Gross",
@@ -990,10 +990,17 @@ def as_frame(rows: list[dict], show_buyer: bool) -> pd.DataFrame:
         keep += ["Sale Date", "Buyer"]
     keep += ["Salesperson"]
     out = frame[[column for column in keep if column in frame.columns]].copy()
-    if "Purchase Cost" not in out.columns:
-        out.insert(out.columns.get_loc("Web Price") + 1 if "Web Price" in out.columns else len(out.columns), "Purchase Cost", None)
-    if "Purchase Cost" in out.columns:
-        out["Purchase Cost"] = pd.to_numeric(out["Purchase Cost"], errors="coerce")
+    if "Vehicle Cost" not in out.columns:
+        out.insert(out.columns.get_loc("Web Price") + 1 if "Web Price" in out.columns else len(out.columns), "Vehicle Cost", None)
+    if "Vehicle Cost" in out.columns:
+        out["Vehicle Cost"] = pd.to_numeric(out["Vehicle Cost"], errors="coerce")
+        retail = pd.to_numeric(out["Retail Price"], errors="coerce") if "Retail Price" in out.columns else None
+        comm = pd.to_numeric(out["Comm Gross"], errors="coerce") if "Comm Gross" in out.columns else None
+        if retail is not None and comm is not None:
+            calculated = retail - comm
+            have_real_cost = out["Vehicle Cost"].notna() & (out["Vehicle Cost"] != 0)
+            out.loc[comm.notna() & retail.notna() & ~have_real_cost, "Vehicle Cost"] = calculated
+        out = out.rename(columns={"Vehicle Cost": "Vehicle Cost"})
     if "Mileage" in out.columns:
         out["Mileage"] = pd.to_numeric(out["Mileage"], errors="coerce").round().astype("Int64")
     if "Year" in out.columns:
@@ -1001,11 +1008,11 @@ def as_frame(rows: list[dict], show_buyer: bool) -> pd.DataFrame:
     return out
 
 
-AVG_COLS = ["Mileage", "Web Price", "Purchase Cost", "Retail Price", "Age", "Comm Gross", "House Gross", "Finance Gross"]
+AVG_COLS = ["Mileage", "Web Price", "Vehicle Cost", "Retail Price", "Age", "Comm Gross", "House Gross", "Finance Gross"]
 
 
 def average_row(group: pd.DataFrame) -> dict:
-    row = {column: None if column in ("Web Price", "Purchase Cost", "Retail Price", "Mileage", "Age", "Comm Gross", "House Gross", "Finance Gross") else "" for column in group.columns}
+    row = {column: None if column in ("Web Price", "Vehicle Cost", "Retail Price", "Mileage", "Age", "Comm Gross", "House Gross", "Finance Gross") else "" for column in group.columns}
     row["Stock"] = "Average"
     for column in AVG_COLS:
         if column not in group.columns:
@@ -1130,9 +1137,9 @@ def show_sheet(payload: dict):
         a4.metric("Avg comm", money(comm_avg) or "—")
         a5.metric("Avg house", money(house_avg) or "—")
         a6.metric("Avg finance", money(finance_avg) or "—")
-        if "Purchase Cost" in frame.columns and pd.to_numeric(frame["Purchase Cost"], errors="coerce").notna().any():
-            cost_avg = pd.to_numeric(frame["Purchase Cost"], errors="coerce").mean()
-            cost_total = pd.to_numeric(frame["Purchase Cost"], errors="coerce").sum()
+        if "Vehicle Cost" in frame.columns and pd.to_numeric(frame["Vehicle Cost"], errors="coerce").notna().any():
+            cost_avg = pd.to_numeric(frame["Vehicle Cost"], errors="coerce").mean()
+            cost_total = pd.to_numeric(frame["Vehicle Cost"], errors="coerce").sum()
             b1, b2 = st.columns(2)
             b1.metric("Purchase cost", money(cost_total) or "—")
             b2.metric("Avg purchase cost", money(cost_avg) or "—")
@@ -1150,7 +1157,7 @@ def show_sheet(payload: dict):
         + f" · {len(frame):,} vehicles · avg mileage {miles_text(miles_avg) or '—'} · avg web {web_txt} · avg retail {retail_txt} · avg age {age_text(age_avg) or '—'} · avg comm {comm_txt} · avg house {house_txt} · avg finance {finance_txt}"
     )
 
-    money_cols = [column for column in ["Web Price", "Purchase Cost", "Retail Price", "Comm Gross", "House Gross", "Finance Gross"] if column in frame.columns]
+    money_cols = [column for column in ["Web Price", "Vehicle Cost", "Retail Price", "Comm Gross", "House Gross", "Finance Gross"] if column in frame.columns]
     formats = {column: money for column in money_cols}
     if "Age" in frame.columns:
         formats["Age"] = age_text
@@ -1177,7 +1184,7 @@ def show_sheet(payload: dict):
         comm_total = pd.to_numeric(group["Comm Gross"], errors="coerce").sum() if "Comm Gross" in group.columns else 0
         house_total = pd.to_numeric(group["House Gross"], errors="coerce").sum() if "House Gross" in group.columns else 0
         finance_total = pd.to_numeric(group["Finance Gross"], errors="coerce").sum() if "Finance Gross" in group.columns else 0
-        totals_parts = [("Cost", pd.to_numeric(group["Purchase Cost"], errors="coerce").sum() if "Purchase Cost" in group.columns else 0), ("Retail", retail_total), ("Comm", comm_total), ("House", house_total), ("Finance", finance_total)]
+        totals_parts = [("Cost", pd.to_numeric(group["Vehicle Cost"], errors="coerce").sum() if "Vehicle Cost" in group.columns else 0), ("Retail", retail_total), ("Comm", comm_total), ("House", house_total), ("Finance", finance_total)]
         totals = " · ".join(
             f"{label} {(money(value) or '$0.00').replace('$', '&#36;')}"
             for label, value in totals_parts
