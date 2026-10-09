@@ -1175,9 +1175,7 @@ def show_sheet(payload: dict):
         comm_total = pd.to_numeric(group["Comm Gross"], errors="coerce").sum() if "Comm Gross" in group.columns else 0
         house_total = pd.to_numeric(group["House Gross"], errors="coerce").sum() if "House Gross" in group.columns else 0
         finance_total = pd.to_numeric(group["Finance Gross"], errors="coerce").sum() if "Finance Gross" in group.columns else 0
-        totals_parts = [("Retail", retail_total), ("Comm", comm_total), ("House", house_total), ("Finance", finance_total)]
-        if "Purchase Cost" in group.columns and pd.to_numeric(group["Purchase Cost"], errors="coerce").notna().any():
-            totals_parts.insert(0, ("Cost", pd.to_numeric(group["Purchase Cost"], errors="coerce").sum()))
+        totals_parts = [("Cost", pd.to_numeric(group["Purchase Cost"], errors="coerce").sum() if "Purchase Cost" in group.columns else 0), ("Retail", retail_total), ("Comm", comm_total), ("House", house_total), ("Finance", finance_total)]
         totals = " · ".join(
             f"{label} {(money(value) or '$0.00').replace('$', '&#36;')}"
             for label, value in totals_parts
