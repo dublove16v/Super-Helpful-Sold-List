@@ -1181,7 +1181,7 @@ st.markdown(
     """
     <div class="app-title">Mega Super Helpful Sold List</div>
     <div class="app-rule"></div>
-    <div class="app-sub">A list like you've never seen before</div>
+    <div class="app-sub">The cars that left, who sold them, and what they grossed.</div>
     """,
     unsafe_allow_html=True,
 )
