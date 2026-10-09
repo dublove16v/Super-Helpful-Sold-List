@@ -823,7 +823,7 @@ import pandas as pd
 import streamlit as st
 
 
-st.set_page_config(page_title="Mega Super Helpful Sold List", layout="wide")
+st.set_page_config(page_title="Mega Super Helpful Sold List", page_icon="car.png", layout="wide")
 
 st.markdown(
     """
