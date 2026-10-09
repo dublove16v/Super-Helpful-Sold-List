@@ -898,6 +898,8 @@ st.markdown(
         padding: 0.4rem 0.75rem;
         font-weight: 700;
         margin: 0.8rem 0 0.3rem;
+        white-space: normal;
+        line-height: 1.4;
       }
       .stTabs [data-baseweb="tab-list"] { justify-content: center; }
       .stTabs [data-baseweb="tab"] { color: #231f20; }
@@ -1158,10 +1160,18 @@ def show_sheet(payload: dict):
         st.info("Nothing matches that filter.")
     for make_name, group in frame.groupby("Make", sort=False):
         sold = int(group["Finance Gross"].notna().sum()) if "Finance Gross" in group.columns else 0
+        retail_total = pd.to_numeric(group["Retail Price"], errors="coerce").sum() if "Retail Price" in group.columns else 0
+        comm_total = pd.to_numeric(group["Comm Gross"], errors="coerce").sum() if "Comm Gross" in group.columns else 0
+        house_total = pd.to_numeric(group["House Gross"], errors="coerce").sum() if "House Gross" in group.columns else 0
+        finance_total = pd.to_numeric(group["Finance Gross"], errors="coerce").sum() if "Finance Gross" in group.columns else 0
+        totals = " · ".join(
+            f"{label} {(money(value) or '$0.00').replace('$', '&#36;')}"
+            for label, value in [("Retail", retail_total), ("Comm", comm_total), ("House", house_total), ("Finance", finance_total)]
+        )
         st.markdown(
             f'<div class="make-bar">Make: {make_name} · Count: {len(group)}'
             + (f" · {sold} with sales" if sold else "")
-            + "</div>",
+            + f" · {totals}</div>",
             unsafe_allow_html=True,
         )
         shown = pd.concat([group, pd.DataFrame([average_row(group)])], ignore_index=True)
